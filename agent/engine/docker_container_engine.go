@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"strconv"
 
 	"golang.org/x/net/context"
 
@@ -40,8 +41,9 @@ import (
 )
 
 const (
-	dockerStopTimeoutSeconds = 30
 	dockerDefaultTag         = "latest"
+	DOCKER_STOP_TIMEOUT_ENV_VAR = "ECS_DOCKER_STOP_TIMEOUT"
+	DOCKER_STOP_TIMEOUT_DEFAULT = 30
 )
 
 // Timelimits for docker operations enforced above docker
@@ -101,6 +103,7 @@ type DockerClient interface {
 //    appropriately there.
 // Implements DockerClient
 type dockerGoClient struct {
+	dockerStopTimeout   uint
 	clientFactory    dockerclient.Factory
 	version          dockerclient.DockerVersion
 	auth             dockerauth.DockerAuthProvider
@@ -146,7 +149,23 @@ func NewDockerGoClient(clientFactory dockerclient.Factory, authType string, auth
 		return nil, err
 	}
 
+	var dockerStopTimeout uint
+	dockerStopTimeout = DOCKER_STOP_TIMEOUT_DEFAULT
+
+	dockerStopTimeoutStr := os.Getenv(DOCKER_STOP_TIMEOUT_ENV_VAR)
+
+	if dockerStopTimeoutStr != "" {
+		dockerStopTimeoutUint, err := strconv.ParseUint(dockerStopTimeoutStr, 10, 64)
+		if err != nil {
+			// handle error
+			log.Error("Could not parse docker timeout environment variable", "err", err)
+		} else {
+			dockerStopTimeout = uint(dockerStopTimeoutUint)
+		}
+	}
+
 	return &dockerGoClient{
+		dockerStopTimeout:   dockerStopTimeout,
 		clientFactory:    clientFactory,
 		auth:             dockerauth.NewDockerAuthProvider(authType, authData.Contents()),
 		ecrClientFactory: ecr.NewECRFactory(acceptInsecureCert),
@@ -452,7 +471,7 @@ func (dg *dockerGoClient) stopContainer(ctx context.Context, dockerId string) Do
 		return DockerContainerMetadata{Error: CannotGetDockerClientError{version: dg.version, err: err}}
 	}
 
-	err = client.StopContainer(dockerId, dockerStopTimeoutSeconds)
+	err = client.StopContainer(dockerId, dg.dockerStopTimeout)
 	select {
 	case <-ctx.Done():
 		// parent function has already timed out and returned; we're writing to a
